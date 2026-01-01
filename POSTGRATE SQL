@@ -1,3 +1,101 @@
+-- ==========================================
+-- SCENARIO 1: 2PC BLOCKING PROBLEM
+-- ==========================================
+-- Step 1: Setup
+CREATE TABLE vault (id INT PRIMARY KEY, gold INT);
+INSERT INTO vault VALUES (1, 1000);
+
+-- Step 2: Start Transaction and Lock Resources
+BEGIN;
+UPDATE vault SET gold = 900 WHERE id = 1;
+
+-- Step 3: Prepare Transaction (Phase 1)
+-- Note: Requires max_prepared_transactions > 0 in postgresql.conf
+PREPARE TRANSACTION 'pg_tx_recovery_01';
+
+-- Step 4: Verify Locks Persist
+SELECT gid, prepared, owner FROM pg_prepared_xacts;
+
+-- ==========================================
+-- SCENARIO 2: 3PC RECOVERY LOGIC
+-- ==========================================
+-- Step 1: Create Log Table
+CREATE TABLE protocol_state (tx_id TEXT, state TEXT);
+
+-- Step 2: Insert Pre-Commit Flag
+INSERT INTO protocol_state VALUES ('tx_3pc_01', 'PRE_COMMIT');
+
+-- Step 3: Recovery Query
+SELECT CASE 
+    WHEN state = 'PRE_COMMIT' THEN 'COMMIT_SAFE' 
+    ELSE 'ABORT' 
+END AS decision 
+FROM protocol_state 
+WHERE tx_id = 'tx_3pc_01';
+
+-- ==========================================
+-- SCENARIO 3: BLOCKCHAIN (PGCRYPTO)
+-- ==========================================
+-- Step 1: Enable Crypto Extension
+CREATE EXTENSION IF NOT EXISTS pgcrypto;
+
+-- Step 2: Create Secure Log Table
+CREATE TABLE secure_log (id INT, data TEXT, hash TEXT);
+
+-- Step 3: Insert Data with SHA-256 Hash
+INSERT INTO secure_log VALUES (1, 'Archive Data', encode(digest('Archive Data', 'sha256'), 'hex'));
+
+-- Step 4: Simulate Corruption
+UPDATE secure_log SET data = 'Corrupt Data' WHERE id = 1;
+
+-- Step 5: Verify Hash Mismatch
+SELECT id, data, 
+    CASE 
+        WHEN encode(digest(data, 'sha256'), 'hex') = hash THEN 'VALID' 
+        ELSE 'TAMPERED' 
+    END AS status 
+FROM secure_log;
+
+-- ==========================================
+-- FAILURE SIMULATION: NETWORK DISCONNECT
+-- ==========================================
+CREATE DATABASE testdb;
+\c testdb
+
+CREATE TABLE accounts (id INT PRIMARY KEY, balance INT);
+INSERT INTO accounts VALUES (1, 1000);
+
+BEGIN;
+UPDATE accounts SET balance = balance - 100 WHERE id = 1;
+PREPARE TRANSACTION 'net_fail_tx_01';
+
+-- Verify Prepared State after Network Failure
+SELECT * FROM pg_prepared_xacts;
+
+-- ==========================================
+-- FAILURE SIMULATION: FORCE INCOMPLETE TX
+-- ==========================================
+CREATE DATABASE xa_test;
+\c xa_test
+
+CREATE TABLE accounts (
+    id SERIAL PRIMARY KEY, 
+    balance INT NOT NULL
+);
+
+INSERT INTO accounts (balance) VALUES (100);
+
+-- Session A: Lock the row
+BEGIN;
+UPDATE accounts SET balance = balance - 10 WHERE id = 1;
+PREPARE TRANSACTION 'xid-001';
+
+-- (Session B would fail to acquire lock here)
+
+
+
+
+--python code
 --2PC
 CREATE TABLE vault (id INT PRIMARY KEY, gold INT);
 INSERT INTO vault VALUES (1, 1000);
