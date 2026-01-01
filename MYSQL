@@ -103,3 +103,88 @@ BEGIN
 END$$
 
 DELIMITER ;
+
+
+-- ==========================================
+-- FAILURE SIMULATION: NETWORK DISCONNECT
+-- ==========================================
+-- Setup initial state 
+CREATE DATABASE testdb;
+\c testdb
+CREATE TABLE accounts (id INT PRIMARY KEY, balance INT);
+INSERT INTO accounts VALUES (1, 1000);
+
+-- Initiate and Prepare Transaction 
+XA START 'tx_2pc_demo;
+UPDATE accounts SET balance = balance - 100 WHERE id = 1;
+XA END 'tx_2pc_demo';
+XA PREPARE 'tx_2pc_demo';
+
+-- After simulated network adapter disconnect 
+-- Verify Prepared State remains active and unresolved 
+XA RECOVER;
+
+-- Resolve Transaction
+XA ROLLBACK 'tx_2pc_demo';
+
+-- ==========================================
+-- FAILURE SIMULATION: DATABASE CRASH
+-- ==========================================
+-- Setup vault table 
+CREATE TABLE IF NOT EXISTS vault (id INT PRIMARY KEY, gold INT);
+INSERT INTO vault (id, gold) VALUES (1, 1000) ON CONFLICT (id) DO UPDATE SET gold = EXCLUDED.gold;
+
+-- Enter Prepared State before crash 
+USE xa_test;
+XA START 'xid-001';
+UPDATE accounts SET balance = balance - 10 WHERE id = 1;
+XA END 'xid-001';
+XA PREPARE 'xid-001';
+
+-- Blocked query in separate session
+USE xa_test;
+
+-- Simulate crash by stopping PostgreSQL service 
+-- After restart, verify durability via WAL 
+XA RECOVER;
+
+-- Resolve transaction
+XA COMMIT 'xid-001';
+
+-- ==================================================
+-- FAILURE SIMULATION: FORCE INCOMPLETE TRANSACTION
+-- ==================================================
+-- 1. Setup: Create a test database and InnoDB table 
+CREATE DATABASE IF NOT EXISTS xa_test; USE xa_test; 
+USE xa_test;
+DROP TABLE IF EXISTS accounts;  
+CREATE TABLE accounts ( id INT PRIMARY KEY, balance INT NOT NULL ) ENGINE=InnoDB; 
+
+-- 2. Insert initial data  
+INSERT INTO accounts (id, balance) VALUES (1, 100) ON DUPLICATE KEY UPDATE balance = VALUES(balance); 
+
+-- 3. Session A: Initiate and Prepare XA Transaction 
+USE xa_test;
+XA START 'xid-001'; 
+UPDATE accounts SET balance = balance - 10 WHERE id = 1; 
+XA END 'xid-001'; 
+XA PREPARE 'xid-001'; 
+
+-- 4. Session B: Attempt modification (Verification of Locking) 
+-- This query will block and eventually timeout 
+USE xa_test;
+UPDATE accounts SET balance = balance + 20 WHERE id = 1; 
+-- Expected Output: ERROR 1205 (HY000): Lock wait timeout exceeded 
+
+-- 5. Simulate Failure: Kill MySQL process via Command Prompt 
+-- net stop MySQL80 
+-- net start MySQL80 
+
+-- 6. Verification & Recovery: Check in-doubt transactions after restart 
+XA RECOVER; 
+
+-- 7. Finalize the transaction manually 
+XA COMMIT 'xid-001'; 
+
+-- 8. Verify final balance 
+SELECT * FROM accounts WHERE id = 1;
