@@ -1,1 +1,105 @@
+CREATE DATABASE final_project;
+USE final_project;
+DROP TABLE IF EXISTS accounts;
+CREATE TABLE accounts (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+    owner VARCHAR(50),
+    balance DECIMAL(10,2)
+);
+INSERT INTO accounts (owner, balance) VALUES ('Nuha', 1000.00), ('Dina', 1000.00);
 
+DROP TABLE IF EXISTS three_phase_log;
+CREATE TABLE three_phase_log (
+    tx_id VARCHAR(50),
+    state VARCHAR(20),
+    saved_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+DROP TABLE IF EXISTS chain_ledger;
+CREATE TABLE chain_ledger (
+    block_id INT AUTO_INCREMENT PRIMARY KEY,
+    tx_data TEXT,
+    prev_hash VARCHAR(64),
+    curr_hash VARCHAR(64),
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+DELIMITER $$
+
+DROP PROCEDURE IF EXISTS simulate_2pc$$
+
+CREATE PROCEDURE simulate_2pc(IN sender VARCHAR(50), IN amount DECIMAL(10,2), IN crash_switch BOOLEAN)
+BEGIN
+    DECLARE current_bal DECIMAL(10,2);
+    
+    START TRANSACTION;
+    SELECT balance INTO current_bal FROM accounts WHERE owner = sender FOR UPDATE;
+
+    IF crash_switch THEN
+        DO SLEEP(5); 
+        SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'SYSTEM CRASH: Resources left locked (Blocking Problem)';
+    ELSE
+        UPDATE accounts SET balance = balance - amount WHERE owner = sender;
+        COMMIT;
+        SELECT 'Transaction Successful' AS status;
+    END IF;
+END$$
+
+DELIMITER ;
+
+DELIMITER $$
+
+DROP PROCEDURE IF EXISTS simulate_3pc$$
+
+CREATE PROCEDURE simulate_3pc(IN sender VARCHAR(50), IN amount DECIMAL(10,2))
+BEGIN
+    DECLARE new_tx_id VARCHAR(50);
+    SET new_tx_id = UUID();
+
+    START TRANSACTION;
+    
+    -- Write to Log FIRST (The Safety Net)
+    INSERT INTO three_phase_log (tx_id, state) VALUES (new_tx_id, 'PRE_COMMIT');
+    
+    -- Then do the work
+    UPDATE accounts SET balance = balance - amount WHERE owner = sender;
+    
+    -- Finish
+    UPDATE three_phase_log SET state = 'COMMITTED' WHERE tx_id = new_tx_id;
+    COMMIT;
+    
+    SELECT * FROM three_phase_log WHERE tx_id = new_tx_id;
+END$$
+
+DELIMITER ;
+
+DELIMITER $$
+
+DROP PROCEDURE IF EXISTS simulate_blockchain$$
+
+CREATE PROCEDURE simulate_blockchain(IN sender VARCHAR(50), IN amount DECIMAL(10,2))
+BEGIN
+    DECLARE last_hash VARCHAR(64);
+    DECLARE new_hash VARCHAR(64);
+    DECLARE data_string TEXT;
+
+    -- 1. Get the last hash
+    SELECT curr_hash INTO last_hash FROM chain_ledger ORDER BY block_id DESC LIMIT 1;
+    
+    IF last_hash IS NULL THEN
+        SET last_hash = '00000000000000000000000000000000'; 
+    END IF;
+
+    -- 2. Create Hash
+    SET data_string = CONCAT(sender, ' sent ', amount, ' | Prev: ', last_hash);
+    SET new_hash = SHA2(data_string, 256);
+
+    -- 3. Save
+    INSERT INTO chain_ledger (tx_data, prev_hash, curr_hash) 
+    VALUES (data_string, last_hash, new_hash);
+
+    -- 4. Show the chain
+    SELECT tx_data, prev_hash, curr_hash FROM chain_ledger ORDER BY block_id DESC LIMIT 2;
+END$$
+
+DELIMITER ;
