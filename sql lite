@@ -1,3 +1,75 @@
+-- ==========================================
+-- SCENARIO 1: 2PC & BLOCKING SIMULATION
+-- ==========================================
+-- Step 1: Environment Setup
+CREATE TABLE transactions (id INTEGER PRIMARY KEY, amount REAL, status TEXT);
+INSERT INTO transactions (id, amount, status) VALUES (1, 100, 'PENDING');
+
+-- Step 2: Simulate Coordinator Locking (Prepare Phase)
+BEGIN EXCLUSIVE TRANSACTION;
+UPDATE transactions SET amount = 500 WHERE id = 1;
+
+-- (Note: In the experiment, you attempted to access this from a second terminal 
+-- to trigger "Error: database is locked")
+
+-- ==========================================
+-- SCENARIO 2: 3PC (NON-BLOCKING RECOVERY)
+-- ==========================================
+-- Step 1: Initialize Recovery Log
+CREATE TABLE protocol_state (tx_id TEXT, phase TEXT);
+
+-- Step 2: Log the "Pre-Commit" State
+INSERT INTO protocol_state VALUES ('tx_edge_01', 'PRE_COMMIT');
+
+-- Step 3: Autonomous Recovery Decision Logic
+-- This query checks the log to decide whether to commit or wait
+SELECT CASE 
+    WHEN phase = 'PRE_COMMIT' THEN 'AUTO_COMMIT' 
+    ELSE 'WAIT' 
+END AS action 
+FROM protocol_state 
+WHERE tx_id = 'tx_edge_01';
+
+-- ==========================================
+-- SCENARIO 3: BLOCKCHAIN INTEGRITY LAYER
+-- ==========================================
+-- Step 1: Create Ledger Table
+CREATE TABLE ledger (id INT, data TEXT, hash_signature TEXT);
+
+-- Step 2: Insert Valid Data with Hash Signature
+INSERT INTO ledger VALUES (100, 'Temp: 25C', 'VALID_HASH_25C');
+
+-- Step 3: Simulate Tampering (Attack)
+UPDATE ledger SET data = 'Temp: 99C' WHERE id = 100;
+
+-- Step 4: Verify Integrity (Tamper Evidence)
+-- Checks if data matches the signature (Simulated logic from screenshot)
+SELECT id, data, 'TAMPERED_MISMATCH' AS status 
+FROM ledger 
+WHERE data != 'Temp: 25C';
+
+-- ==========================================
+-- FAILURE SIMULATION: FORCE INCOMPLETE TX
+-- ==========================================
+-- Setup
+CREATE TABLE IF NOT EXISTS accounts (
+    id INTEGER PRIMARY KEY, 
+    balance INTEGER NOT NULL
+);
+INSERT INTO accounts (balance) VALUES (100);
+
+-- Session A: Start transaction but do not commit (Simulate Crash)
+BEGIN;
+UPDATE accounts SET balance = balance - 10 WHERE id = 1;
+-- (Leave transaction hanging/uncommitted here)
+
+-- Validation
+SELECT * FROM accounts WHERE id = 1;
+
+
+
+
+--Python code 
 --2PC
 .open edge_node.db
 CREATE TABLE sensors (id INT, status TEXT);
