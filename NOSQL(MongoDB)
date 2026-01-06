@@ -1,0 +1,82 @@
+--2PC
+// 1. Create a test collection
+db.accounts.insertOne({ _id: 1, owner: "Nuha", balance: 1000 })
+
+// 2. Start a Session & Transaction (Phase 1)
+session = db.getMongo().startSession()
+session.startTransaction()
+accounts = session.getDatabase("segment2_project").accounts
+
+// 3. Lock the resource (Update without Commit)
+accounts.updateOne({ _id: 1 }, { $inc: { balance: -100 } })
+
+use segment2_project
+
+// Try to modify the same record
+db.accounts.updateOne({ _id: 1 }, { $set: { balance: 0 } })
+
+--3PC
+// 1. Create a Protocol State Log
+db.createCollection("three_phase_log")
+
+// 2. Phase 1: Write "Pre-Commit" Intent (The Safety Net)
+db.three_phase_log.insertOne({
+    tx_id: "tx_3pc_001",
+    status: "PRE_COMMIT",
+    timestamp: new Date(),
+    payload: { owner: "Nuha", amount: 50 }
+})
+
+// 3. Simulate Recovery Check
+// (If coordinator dies, the new node runs this to find pending jobs)
+var recovery_task = db.three_phase_log.findOne({ status: "PRE_COMMIT" })
+
+// 4. Auto-Recover (Commit the work)
+if (recovery_task) {
+    print("[Recovery] Found pending transaction: " + recovery_task.tx_id);
+    db.accounts.updateOne({ owner: "Nuha" }, { $inc: { balance: -50 } });
+    db.three_phase_log.updateOne(
+        { tx_id: recovery_task.tx_id },
+        { $set: { status: "COMMITTED" } }
+    );
+    print("[Recovery] Transaction successfully rolled forward.");
+}
+
+--BLOCKCHAIN
+// 1. Load Crypto Library (Built-in to mongosh)
+const crypto = require('crypto');
+
+// 2. Insert Valid Block
+let data = "Nuha sent 500";
+let prev_hash = "0000000000000000";
+let curr_hash = crypto.createHash('sha256').update(data + prev_hash).digest('hex');
+
+db.ledger.insertOne({
+    block_id: 1,
+    data: data,
+    prev_hash: prev_hash,
+    curr_hash: curr_hash
+});
+
+// 3. Simulate Attack (Tamper Data)
+// Hacker changes 500 to 9000, but cannot regenerate the hash signature
+db.ledger.updateOne({ block_id: 1 }, { $set: { data: "Nuha sent 9000" } });
+
+// 4. Verify Integrity (Run Audit)
+let block = db.ledger.findOne({ block_id: 1 });
+let re_calculated_hash = crypto.createHash('sha256').update(block.data + block.prev_hash).digest('hex');
+
+if (block.curr_hash !== re_calculated_hash) {
+    print("⚠️ TAMPER DETECTED! Hash Mismatch.");
+    print("Stored: " + block.curr_hash);
+    print("Actual: " + re_calculated_hash);
+} else {
+    print("✅ Block Valid.");
+}
+
+-FAILURE SIMULATION 
+use segment2_project
+db.server_status.insertOne({ status: "ONLINE", uptime: 100 })
+// This command will kill the MongoDB server process immediately
+db.shutdownServer({ force: true })
+
